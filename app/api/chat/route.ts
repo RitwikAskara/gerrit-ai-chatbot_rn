@@ -1,71 +1,95 @@
 import 'server-only'
-import { OpenAIStream, StreamingTextResponse } from 'ai'
-import { Configuration, OpenAIApi } from 'openai-edge'
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs'
-import { cookies } from 'next/headers'
-import { Database } from '@/lib/db_types'
-
-import { auth } from '@/auth'
 import { nanoid } from '@/lib/utils'
 
 export const runtime = 'edge'
 
-const configuration = new Configuration({
-  apiKey: process.env.OPENAI_API_KEY
-})
+// Helper function to create a readable stream from n8n response
+function createStreamFromText(text: string) {
+  const encoder = new TextEncoder()
+  let sent = false
 
-const openai = new OpenAIApi(configuration)
-
-export async function POST(req: Request) {
-  const cookieStore = cookies()
-  const supabase = createRouteHandlerClient<Database>({
-    cookies: () => cookieStore
-  })
-  const json = await req.json()
-  const { messages, previewToken } = json
-  const userId = (await auth({ cookieStore }))?.user.id
-
-  if (!userId) {
-    return new Response('Unauthorized', {
-      status: 401
-    })
-  }
-
-  if (previewToken) {
-    configuration.apiKey = previewToken
-  }
-
-  const res = await openai.createChatCompletion({
-    model: 'gpt-3.5-turbo',
-    messages,
-    temperature: 0.7,
-    stream: true
-  })
-
-  const stream = OpenAIStream(res, {
-    async onCompletion(completion) {
-      const title = json.messages[0].content.substring(0, 100)
-      const id = json.id ?? nanoid()
-      const createdAt = Date.now()
-      const path = `/chat/${id}`
-      const payload = {
-        id,
-        title,
-        userId,
-        createdAt,
-        path,
-        messages: [
-          ...messages,
-          {
-            content: completion,
-            role: 'assistant'
-          }
-        ]
+  return new ReadableStream({
+    start(controller) {
+      if (!sent) {
+        // Send the complete response as a single chunk
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ 
+          choices: [{ 
+            delta: { content: text } 
+          }] 
+        })}\n\n`))
+        
+        // Send done signal
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        sent = true
       }
-      // Insert chat into database.
-      await supabase.from('chats').upsert({ id, payload }).throwOnError()
+      controller.close()
     }
   })
+}
 
-  return new StreamingTextResponse(stream)
+export async function POST(req: Request) {
+  try {
+    const json = await req.json()
+    const { messages, id } = json
+
+    // For testing - bypass authentication
+    const userId = 'test-user'
+
+    // Get the latest user message
+    const userMessage = messages[messages.length - 1]?.content || ''
+    
+    // Generate session ID for n8n (use existing chat ID or create new one)
+    const sessionId = id || nanoid()
+
+    console.log('Sending to n8n:', { sessionId, message: userMessage })
+
+    // Call n8n webhook
+    const n8nResponse = await fetch(process.env.N8N_WEBHOOK_URL!, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        sessionId: sessionId,
+        chatInput: userMessage
+      })
+    })
+
+    if (!n8nResponse.ok) {
+      console.error('n8n webhook error:', await n8nResponse.text())
+      throw new Error(`n8n webhook returned ${n8nResponse.status}`)
+    }
+
+    // Get response from n8n
+    const n8nData = await n8nResponse.text()
+    console.log('n8n response:', n8nData)
+    
+    // n8n Chat Trigger returns the AI response directly as text
+    const aiResponse = n8nData.trim()
+
+    // Create streaming response for the frontend
+    const stream = createStreamFromText(aiResponse)
+
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
+    })
+
+  } catch (error) {
+    console.error('Chat API error:', error)
+    
+    // Return error response
+    const errorMessage = 'Sorry, I encountered an issue. Please try again.'
+    const stream = createStreamFromText(errorMessage)
+    
+    return new Response(stream, {
+      status: 500,
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+      },
+    })
+  }
 }
