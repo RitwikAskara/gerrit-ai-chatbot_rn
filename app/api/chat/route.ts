@@ -1,5 +1,5 @@
 import 'server-only'
-import { OpenAIStream, StreamingTextResponse } from 'ai'
+import { StreamingTextResponse } from 'ai'
 import { nanoid } from '@/lib/utils'
 
 export const runtime = 'edge'
@@ -76,54 +76,42 @@ export async function POST(req: Request) {
     aiResponse = aiResponse.trim()
     console.log('Processed AI response:', aiResponse)
 
-    // Create a mock OpenAI response that the ai/react library expects
-    const mockStream = new ReadableStream({
+    // Create the exact format that ai@2.1.6 expects
+    const encoder = new TextEncoder()
+    
+    const stream = new ReadableStream({
       start(controller) {
-        const encoder = new TextEncoder()
+        // Send the response as a single chunk in the exact format the ai library expects
+        const chunk = `0:"${aiResponse.replace(/"/g, '\\"')}"\n`
+        controller.enqueue(encoder.encode(chunk))
         
-        // Split response into words for streaming effect
-        const words = aiResponse.split(' ')
-        let currentContent = ''
+        // Send the completion signal
+        controller.enqueue(encoder.encode('d:{"finishReason":"stop","usage":{"promptTokens":10,"completionTokens":20}}\n'))
         
-        // Send each word as a chunk
-        words.forEach((word, index) => {
-          currentContent += word
-          if (index < words.length - 1) currentContent += ' '
-          
-          const chunk = {
-            choices: [{
-              delta: { content: index === 0 ? currentContent : ' ' + word },
-              finish_reason: null
-            }]
-          }
-          
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`))
-        })
-        
-        // Send finish chunk
-        const finishChunk = {
-          choices: [{
-            delta: {},
-            finish_reason: 'stop'
-          }]
-        }
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(finishChunk)}\n\n`))
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
         controller.close()
       }
     })
 
-    // Use OpenAIStream to process the mock stream
-    const stream = OpenAIStream(mockStream as any)
-    return new StreamingTextResponse(stream)
+    return new StreamingTextResponse(stream, {
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+      }
+    })
 
   } catch (error) {
     console.error('Chat API error:', error)
     
-    // Return error as plain text
-    return new Response('Sorry, I encountered an issue. Please try again.', {
-      status: 500,
-      headers: { 'Content-Type': 'text/plain' }
+    const encoder = new TextEncoder()
+    const errorStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('0:"Sorry, I encountered an issue. Please try again."\n'))
+        controller.enqueue(encoder.encode('d:{"finishReason":"stop","usage":{"promptTokens":1,"completionTokens":1}}\n'))
+        controller.close()
+      }
+    })
+    
+    return new StreamingTextResponse(errorStream, {
+      status: 500
     })
   }
 }
