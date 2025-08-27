@@ -1,95 +1,71 @@
 import 'server-only'
+import { OpenAIStream, StreamingTextResponse } from 'ai'
+import { Configuration, OpenAIApi } from 'openai-edge'
+import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs'
+import { cookies } from 'next/headers'
+import { Database } from '@/lib/db_types'
+
+import { auth } from '@/auth'
 import { nanoid } from '@/lib/utils'
 
 export const runtime = 'edge'
 
+const configuration = new Configuration({
+  apiKey: process.env.OPENAI_API_KEY
+})
+
+const openai = new OpenAIApi(configuration)
+
 export async function POST(req: Request) {
-  try {
-    const json = await req.json()
-    const { messages, id } = json
+  const cookieStore = cookies()
+  const supabase = createRouteHandlerClient<Database>({
+    cookies: () => cookieStore
+  })
+  const json = await req.json()
+  const { messages, previewToken } = json
+  const userId = (await auth({ cookieStore }))?.user.id
 
-    // Get the latest user message
-    const userMessage = messages[messages.length - 1]?.content || ''
-    
-    // Generate session ID for n8n (use existing chat ID or create new one)
-    const sessionId = id || nanoid()
-
-    console.log('Sending to n8n:', { sessionId, message: userMessage })
-
-    // Call n8n webhook
-    const n8nResponse = await fetch(process.env.N8N_WEBHOOK_URL!, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        sessionId: sessionId,
-        chatInput: userMessage
-      })
-    })
-
-    if (!n8nResponse.ok) {
-      console.error('n8n webhook error:', await n8nResponse.text())
-      throw new Error(`n8n webhook returned ${n8nResponse.status}`)
-    }
-
-    // Get response from n8n
-    const n8nData = await n8nResponse.text()
-    console.log('n8n response:', n8nData)
-    
-    let aiResponse = ''
-    
-    try {
-      // Parse the JSON response from n8n
-      const parsedResponse = JSON.parse(n8nData)
-      
-      // Handle array format: [{ "output": "message" }]
-      if (Array.isArray(parsedResponse) && parsedResponse.length > 0) {
-        if (parsedResponse[0].output) {
-          aiResponse = parsedResponse[0].output
-        } else {
-          aiResponse = String(parsedResponse[0])
-        }
-      }
-      // Handle object format: { "output": "message" }  
-      else if (parsedResponse.output) {
-        aiResponse = parsedResponse.output
-      }
-      // Handle plain string
-      else if (typeof parsedResponse === 'string') {
-        aiResponse = parsedResponse
-      }
-      // Fallback
-      else {
-        aiResponse = JSON.stringify(parsedResponse)
-      }
-    } catch (e) {
-      // If it's not JSON, treat it as plain text
-      aiResponse = n8nData.trim()
-    }
-
-    // Clean up any extra formatting
-    aiResponse = aiResponse.trim()
-
-    console.log('Processed AI response:', aiResponse)
-
-    // Return plain text response
-    // The custom frontend will handle it properly
-    return new Response(aiResponse, {
-      headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
-      },
-    })
-
-  } catch (error) {
-    console.error('Chat API error:', error)
-    
-    // Return error message as plain text
-    return new Response('Sorry, I encountered an issue. Please try again.', {
-      status: 500,
-      headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
-      },
+  if (!userId) {
+    return new Response('Unauthorized', {
+      status: 401
     })
   }
+
+  if (previewToken) {
+    configuration.apiKey = previewToken
+  }
+
+  const res = await openai.createChatCompletion({
+    model: 'gpt-3.5-turbo',
+    messages,
+    temperature: 0.7,
+    stream: true
+  })
+
+  const stream = OpenAIStream(res, {
+    async onCompletion(completion) {
+      const title = json.messages[0].content.substring(0, 100)
+      const id = json.id ?? nanoid()
+      const createdAt = Date.now()
+      const path = `/chat/${id}`
+      const payload = {
+        id,
+        title,
+        userId,
+        createdAt,
+        path,
+        messages: [
+          ...messages,
+          {
+            content: completion,
+            role: 'assistant'
+          }
+        ]
+      }
+      // Insert chat into database.
+      await supabase.from('chats').upsert({ id, payload }).throwOnError()
+    }
+  })
+
+  return new StreamingTextResponse(stream)
 }
