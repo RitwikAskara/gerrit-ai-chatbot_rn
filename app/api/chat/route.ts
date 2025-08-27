@@ -35,8 +35,8 @@ export async function POST(req: Request) {
     let aiResponse = ''
 
     try {
-      // Try parsing JSON
       const parsed = JSON.parse(n8nData)
+
       if (Array.isArray(parsed) && parsed[0]?.output) aiResponse = parsed[0].output
       else if (parsed.output) aiResponse = parsed.output
       else if (typeof parsed === 'string') aiResponse = parsed
@@ -48,14 +48,14 @@ export async function POST(req: Request) {
     aiResponse = aiResponse.trim()
     console.log('Processed AI response:', aiResponse)
 
-    // Return in the structure useChat() expects
+    // Return as an array of messages (fix for useChat)
     const message = {
       id: sessionId,
       role: 'assistant',
       content: aiResponse,
     }
 
-    return new Response(JSON.stringify(message), {
+    return new Response(JSON.stringify([message]), {
       headers: { 'Content-Type': 'application/json' },
     })
 
@@ -66,7 +66,8 @@ export async function POST(req: Request) {
       role: 'assistant',
       content: 'Sorry, I encountered an issue. Please try again.',
     }
-    return new Response(JSON.stringify(errorMessage), {
+
+    return new Response(JSON.stringify([errorMessage]), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     })
