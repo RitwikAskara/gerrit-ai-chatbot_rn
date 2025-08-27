@@ -64,8 +64,41 @@ export async function POST(req: Request) {
     const n8nData = await n8nResponse.text()
     console.log('n8n response:', n8nData)
     
-    // n8n Chat Trigger returns the AI response directly as text
-    const aiResponse = n8nData.trim()
+    let aiResponse = ''
+    
+    try {
+      // Parse the JSON response from n8n
+      const parsedResponse = JSON.parse(n8nData)
+      
+      // Handle array format: [{ "output": "message" }]
+      if (Array.isArray(parsedResponse) && parsedResponse.length > 0) {
+        if (parsedResponse[0].output) {
+          aiResponse = parsedResponse[0].output
+        } else {
+          aiResponse = parsedResponse[0]
+        }
+      }
+      // Handle object format: { "output": "message" }
+      else if (parsedResponse.output) {
+        aiResponse = parsedResponse.output
+      }
+      // Handle plain string
+      else if (typeof parsedResponse === 'string') {
+        aiResponse = parsedResponse
+      }
+      // Fallback
+      else {
+        aiResponse = JSON.stringify(parsedResponse)
+      }
+    } catch (e) {
+      // If it's not JSON, treat it as plain text
+      aiResponse = n8nData.trim()
+    }
+
+    // Clean up any extra formatting
+    aiResponse = aiResponse.trim()
+
+    console.log('Processed AI response:', aiResponse)
 
     // Create streaming response for the frontend
     const stream = createStreamFromText(aiResponse)
