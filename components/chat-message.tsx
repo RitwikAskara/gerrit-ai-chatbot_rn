@@ -43,7 +43,6 @@ export function ChatMessage({ message, ...props }: ChatMessageProps) {
                     <span className="mt-1 animate-pulse cursor-default">▍</span>
                   )
                 }
-
                 children[0] = (children[0] as string).replace('`▍`', '▍')
               }
 
@@ -68,7 +67,8 @@ export function ChatMessage({ message, ...props }: ChatMessageProps) {
             }
           }}
         >
-          {message.content}
+          {/* Changes: Updated this line to fallback to reply */}
+          {(message as any).reply || message.content}
         </MemoizedReactMarkdown>
         <ChatMessageActions message={message} />
       </div>
