@@ -1,7 +1,6 @@
 'use client'
 
 import { useChat, type Message } from 'ai/react'
-
 import { cn } from '@/lib/utils'
 import { ChatList } from '@/components/chat-list'
 import { ChatPanel } from '@/components/chat-panel'
@@ -22,6 +21,7 @@ import { Input } from './ui/input'
 import { toast } from 'react-hot-toast'
 
 const IS_PREVIEW = process.env.VERCEL_ENV === 'preview'
+
 export interface ChatProps extends React.ComponentProps<'div'> {
   initialMessages?: Message[]
   id?: string
@@ -34,20 +34,44 @@ export function Chat({ id, initialMessages, className }: ChatProps) {
   )
   const [previewTokenDialog, setPreviewTokenDialog] = useState(IS_PREVIEW)
   const [previewTokenInput, setPreviewTokenInput] = useState(previewToken ?? '')
-  const { messages, append, reload, stop, isLoading, input, setInput } =
-    useChat({
-      initialMessages,
+
+  const {
+    messages,
+    append,
+    reload,
+    stop,
+    isLoading,
+    input,
+    setInput
+  } = useChat({
+    initialMessages,
+    id,
+    body: {
       id,
-      body: {
-        id,
-        previewToken
-      },
-      onResponse(response) {
-        if (response.status === 401) {
-          toast.error(response.statusText)
-        }
+      previewToken
+    },
+    // Patch: Normalize API response so we only see clean content
+    async onResponse(response) {
+      if (response.status === 401) {
+        toast.error(response.statusText)
+        return
       }
-    })
+
+      try {
+        const data = await response.json()
+        const msg = Array.isArray(data) ? data[0] : data
+
+        return {
+          id: msg.id || Date.now().toString(),
+          role: msg.role || 'assistant',
+          content: msg.content || ''
+        }
+      } catch (err) {
+        console.error('Failed to parse chat response:', err)
+      }
+    }
+  })
+
   return (
     <>
       <div className={cn('pb-[200px] pt-4 md:pt-10', className)}>
@@ -92,7 +116,7 @@ export function Chat({ id, initialMessages, className }: ChatProps) {
           <Input
             value={previewTokenInput}
             placeholder="OpenAI API key"
-            onChange={e => setPreviewTokenInput(e.target.value)}
+            onChange={(e) => setPreviewTokenInput(e.target.value)}
           />
           <DialogFooter className="items-center">
             <Button
