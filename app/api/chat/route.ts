@@ -3,26 +3,47 @@ import { nanoid } from '@/lib/utils'
 
 export const runtime = 'edge'
 
+// Helper function to create a readable stream from n8n response
+function createStreamFromText(text: string) {
+  const encoder = new TextEncoder()
+  let sent = false
+
+  return new ReadableStream({
+    start(controller) {
+      if (!sent) {
+        // Send the complete response as a single chunk
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ 
+          choices: [{ 
+            delta: { content: text } 
+          }] 
+        })}\n\n`))
+        
+        // Send done signal
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        sent = true
+      }
+      controller.close()
+    }
+  })
+}
+
 export async function POST(req: Request) {
-  console.log('=== API ROUTE DEBUGGING START ===')
-  
   try {
     const json = await req.json()
-    console.log('1. Request received:', { 
-      messagesCount: json.messages?.length,
-      id: json.id,
-      lastMessage: json.messages?.[json.messages.length - 1]?.content 
-    })
-
     const { messages, id } = json
+
+    // For testing - bypass authentication
     const userId = 'test-user'
+
+    // Get the latest user message
     const userMessage = messages[messages.length - 1]?.content || ''
+    
+    // Generate session ID for n8n (use existing chat ID or create new one)
     const sessionId = id || nanoid()
 
-    console.log('2. Processed request:', { sessionId, userMessage })
+    console.log('Sending to n8n:', { sessionId, message: userMessage })
 
     // Call n8n webhook
-    console.log('3. Calling n8n webhook...')
     const n8nResponse = await fetch(process.env.N8N_WEBHOOK_URL!, {
       method: 'POST',
       headers: {
@@ -34,99 +55,74 @@ export async function POST(req: Request) {
       })
     })
 
-    console.log('4. n8n response status:', n8nResponse.status, n8nResponse.statusText)
-
     if (!n8nResponse.ok) {
-      const errorText = await n8nResponse.text()
-      console.error('5. n8n webhook error:', errorText)
-      throw new Error(`n8n webhook returned ${n8nResponse.status}: ${errorText}`)
+      console.error('n8n webhook error:', await n8nResponse.text())
+      throw new Error(`n8n webhook returned ${n8nResponse.status}`)
     }
 
     // Get response from n8n
     const n8nData = await n8nResponse.text()
-    console.log('6. Raw n8n response:', n8nData)
-    console.log('7. n8n response type:', typeof n8nData)
-    console.log('8. n8n response length:', n8nData.length)
+    console.log('n8n response:', n8nData)
     
     let aiResponse = ''
     
     try {
+      // Parse the JSON response from n8n
       const parsedResponse = JSON.parse(n8nData)
-      console.log('9. Parsed n8n response:', parsedResponse)
-      console.log('10. Parsed response type:', typeof parsedResponse)
-      console.log('11. Is array?', Array.isArray(parsedResponse))
       
       // Handle array format: [{ "output": "message" }]
       if (Array.isArray(parsedResponse) && parsedResponse.length > 0) {
-        console.log('12. Processing as array, first item:', parsedResponse[0])
         if (parsedResponse[0].output) {
           aiResponse = parsedResponse[0].output
-          console.log('13. Extracted from array.output:', aiResponse)
         } else {
           aiResponse = String(parsedResponse[0])
-          console.log('14. Extracted from array[0]:', aiResponse)
         }
       }
       // Handle object format: { "output": "message" }  
       else if (parsedResponse.output) {
         aiResponse = parsedResponse.output
-        console.log('15. Extracted from object.output:', aiResponse)
       }
       // Handle plain string
       else if (typeof parsedResponse === 'string') {
         aiResponse = parsedResponse
-        console.log('16. Using as plain string:', aiResponse)
       }
       // Fallback
       else {
         aiResponse = JSON.stringify(parsedResponse)
-        console.log('17. Fallback stringify:', aiResponse)
       }
     } catch (e) {
-      console.log('18. JSON parse failed, using as plain text')
-      console.log('19. Parse error:', e.message)
+      // If it's not JSON, treat it as plain text
       aiResponse = n8nData.trim()
     }
 
+    // Clean up any extra formatting
     aiResponse = aiResponse.trim()
-    console.log('20. Final AI response:', aiResponse)
-    console.log('21. Final response length:', aiResponse.length)
 
-    // Create simple response for debugging
-    console.log('22. Creating response stream...')
-    
-    // Return as simple text first to debug
-    const debugResponse = `DEBUG INFO:
-n8n Status: ${n8nResponse.status}
-Raw n8n Data: ${n8nData}
-Parsed Response: ${aiResponse}
-Message Length: ${aiResponse.length}
+    console.log('Processed AI response:', aiResponse)
 
-ACTUAL MESSAGE:
-${aiResponse}`
+    // Create streaming response for the frontend
+    const stream = createStreamFromText(aiResponse)
 
-    console.log('23. Debug response created:', debugResponse.substring(0, 100) + '...')
-    console.log('=== API ROUTE DEBUGGING END ===')
-
-    return new Response(debugResponse, {
+    return new Response(stream, {
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
       },
     })
 
   } catch (error) {
-    console.error('=== ERROR IN API ROUTE ===')
-    console.error('Error type:', error.constructor.name)
-    console.error('Error message:', error.message)
-    console.error('Error stack:', error.stack)
-    console.error('=== END ERROR ===')
+    console.error('Chat API error:', error)
     
-    return new Response(`ERROR DEBUG:
-Type: ${error.constructor.name}
-Message: ${error.message}
-Stack: ${error.stack}`, {
+    // Return error response
+    const errorMessage = 'Sorry, I encountered an issue. Please try again.'
+    const stream = createStreamFromText(errorMessage)
+    
+    return new Response(stream, {
       status: 500,
-      headers: { 'Content-Type': 'text/plain' }
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+      },
     })
   }
 }
