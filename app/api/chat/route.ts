@@ -1,31 +1,8 @@
 import 'server-only'
+import { OpenAIStream, StreamingTextResponse } from 'ai'
 import { nanoid } from '@/lib/utils'
 
 export const runtime = 'edge'
-
-// Helper function to create a readable stream from n8n response
-function createStreamFromText(text: string) {
-  const encoder = new TextEncoder()
-  let sent = false
-
-  return new ReadableStream({
-    start(controller) {
-      if (!sent) {
-        // Send the complete response as a single chunk
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ 
-          choices: [{ 
-            delta: { content: text } 
-          }] 
-        })}\n\n`))
-        
-        // Send done signal
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
-        sent = true
-      }
-      controller.close()
-    }
-  })
-}
 
 export async function POST(req: Request) {
   try {
@@ -75,10 +52,10 @@ export async function POST(req: Request) {
         if (parsedResponse[0].output) {
           aiResponse = parsedResponse[0].output
         } else {
-          aiResponse = parsedResponse[0]
+          aiResponse = String(parsedResponse[0])
         }
       }
-      // Handle object format: { "output": "message" }
+      // Handle object format: { "output": "message" }  
       else if (parsedResponse.output) {
         aiResponse = parsedResponse.output
       }
@@ -97,32 +74,56 @@ export async function POST(req: Request) {
 
     // Clean up any extra formatting
     aiResponse = aiResponse.trim()
-
     console.log('Processed AI response:', aiResponse)
 
-    // Create streaming response for the frontend
-    const stream = createStreamFromText(aiResponse)
-
-    return new Response(stream, {
-      headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      },
+    // Create a mock OpenAI response that the ai/react library expects
+    const mockStream = new ReadableStream({
+      start(controller) {
+        const encoder = new TextEncoder()
+        
+        // Split response into words for streaming effect
+        const words = aiResponse.split(' ')
+        let currentContent = ''
+        
+        // Send each word as a chunk
+        words.forEach((word, index) => {
+          currentContent += word
+          if (index < words.length - 1) currentContent += ' '
+          
+          const chunk = {
+            choices: [{
+              delta: { content: index === 0 ? currentContent : ' ' + word },
+              finish_reason: null
+            }]
+          }
+          
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`))
+        })
+        
+        // Send finish chunk
+        const finishChunk = {
+          choices: [{
+            delta: {},
+            finish_reason: 'stop'
+          }]
+        }
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(finishChunk)}\n\n`))
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        controller.close()
+      }
     })
+
+    // Use OpenAIStream to process the mock stream
+    const stream = OpenAIStream(mockStream as any)
+    return new StreamingTextResponse(stream)
 
   } catch (error) {
     console.error('Chat API error:', error)
     
-    // Return error response
-    const errorMessage = 'Sorry, I encountered an issue. Please try again.'
-    const stream = createStreamFromText(errorMessage)
-    
-    return new Response(stream, {
+    // Return error as plain text
+    return new Response('Sorry, I encountered an issue. Please try again.', {
       status: 500,
-      headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
-      },
+      headers: { 'Content-Type': 'text/plain' }
     })
   }
 }
