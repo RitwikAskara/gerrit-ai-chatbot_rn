@@ -8,7 +8,7 @@ export async function POST(req: Request) {
     const json = await req.json()
     const { messages, id } = json
 
-    // Extract user message and generate session ID
+    // Extract latest user message and session ID
     const userMessage = messages[messages.length - 1]?.content || ''
     const sessionId = id || nanoid()
 
@@ -37,10 +37,15 @@ export async function POST(req: Request) {
     try {
       const parsed = JSON.parse(n8nData)
 
-      if (Array.isArray(parsed) && parsed[0]?.output) aiResponse = parsed[0].output
-      else if (parsed.output) aiResponse = parsed.output
-      else if (typeof parsed === 'string') aiResponse = parsed
-      else aiResponse = JSON.stringify(parsed)
+      if (Array.isArray(parsed) && parsed[0]?.output) {
+        aiResponse = parsed[0].output
+      } else if (parsed.output) {
+        aiResponse = parsed.output
+      } else if (typeof parsed === 'string') {
+        aiResponse = parsed
+      } else {
+        aiResponse = JSON.stringify(parsed)
+      }
     } catch {
       aiResponse = n8nData.trim()
     }
@@ -48,14 +53,14 @@ export async function POST(req: Request) {
     aiResponse = aiResponse.trim()
     console.log('Processed AI response:', aiResponse)
 
-    // Return as an array of messages (fix for useChat)
+    // Return a single message object
     const message = {
       id: sessionId,
       role: 'assistant',
       content: aiResponse,
     }
 
-    return new Response(JSON.stringify([message]), {
+    return new Response(JSON.stringify(message), {
       headers: { 'Content-Type': 'application/json' },
     })
 
@@ -67,7 +72,7 @@ export async function POST(req: Request) {
       content: 'Sorry, I encountered an issue. Please try again.',
     }
 
-    return new Response(JSON.stringify([errorMessage]), {
+    return new Response(JSON.stringify(errorMessage), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     })
