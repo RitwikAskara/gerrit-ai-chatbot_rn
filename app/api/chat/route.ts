@@ -16,10 +16,6 @@ export async function POST(req: Request) {
 
     console.log('Sending to n8n:', { sessionId, message: userMessage })
 
-    // DIAGNOSTIC: Check if this is what the frontend expects
-    // Log the incoming request to understand what useChat is sending
-    console.log('Full request from useChat:', JSON.stringify(json, null, 2))
-
     // Call n8n webhook
     const n8nResponse = await fetch(process.env.N8N_WEBHOOK_URL!, {
       method: 'POST',
@@ -76,23 +72,61 @@ export async function POST(req: Request) {
     aiResponse = aiResponse.trim()
 
     console.log('Processed AI response:', aiResponse)
-    
-    // DIAGNOSTIC: Try returning just plain text to see what happens
-    // This is the simplest possible response
-    return new Response(aiResponse, {
-      status: 200,
+
+    // Return a JSON response that might work better with useChat
+    const response = {
+      id: 'chatcmpl-' + nanoid(),
+      object: 'chat.completion',
+      created: Date.now(),
+      model: 'n8n',
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: aiResponse
+          },
+          finish_reason: 'stop'
+        }
+      ],
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0
+      }
+    }
+
+    return new Response(JSON.stringify(response), {
       headers: {
-        'Content-Type': 'text/plain',
+        'Content-Type': 'application/json',
       },
     })
 
   } catch (error) {
     console.error('Chat API error:', error)
     
-    return new Response('Sorry, I encountered an issue. Please try again.', {
+    // Return error as JSON
+    const errorResponse = {
+      id: 'chatcmpl-error',
+      object: 'chat.completion',
+      created: Date.now(),
+      model: 'n8n',
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: 'Sorry, I encountered an issue. Please try again.'
+          },
+          finish_reason: 'stop'
+        }
+      ]
+    }
+    
+    return new Response(JSON.stringify(errorResponse), {
       status: 500,
       headers: {
-        'Content-Type': 'text/plain',
+        'Content-Type': 'application/json',
       },
     })
   }
