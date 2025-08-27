@@ -1,7 +1,7 @@
 'use client'
 
-import { useChat, type Message } from 'ai/react'
-import { useCallback, useRef, useState, useEffect } from 'react'
+import { type Message } from 'ai/react'
+import { useCallback, useRef, useState } from 'react'
 
 import { cn } from '@/lib/utils'
 import { ChatList } from '@/components/chat-list'
@@ -29,6 +29,13 @@ export interface ChatProps extends React.ComponentProps<'div'> {
   id?: string
 }
 
+// Type for CreateMessage to match what ChatPanel expects
+type CreateMessage = {
+  id?: string
+  role: 'user' | 'assistant'
+  content: string
+}
+
 export function Chat({ id: initialId, initialMessages, className }: ChatProps) {
   const [previewToken, setPreviewToken] = useLocalStorage<string | null>(
     'ai-token',
@@ -44,13 +51,14 @@ export function Chat({ id: initialId, initialMessages, className }: ChatProps) {
   const [id] = useState(initialId || nanoid())
   const abortControllerRef = useRef<AbortController | null>(null)
 
-  // Custom append function
-  const append = useCallback(async (message: Message) => {
+  // Custom append function that returns Promise<string | null | undefined> as expected by ChatPanel
+  const append = useCallback(async (message: Message | CreateMessage): Promise<string | null | undefined> => {
     setIsLoading(true)
     
     // Add user message
+    const messageId = message.id || nanoid()
     const userMessage: Message = {
-      id: message.id || nanoid(),
+      id: messageId,
       role: 'user',
       content: message.content
     }
@@ -130,13 +138,17 @@ export function Chat({ id: initialId, initialMessages, className }: ChatProps) {
       
       if (assistantContent) {
         // Add assistant message
+        const assistantId = nanoid()
         const assistantMessage: Message = {
-          id: nanoid(),
+          id: assistantId,
           role: 'assistant',
           content: assistantContent
         }
         
         setMessages(prev => [...prev, assistantMessage])
+        
+        // Return the message ID as expected by ChatPanel
+        return assistantId
       } else {
         throw new Error('No content received from API')
       }
@@ -146,6 +158,7 @@ export function Chat({ id: initialId, initialMessages, className }: ChatProps) {
         console.error('Chat error:', error)
         toast.error(error.message || 'Failed to send message')
       }
+      return null
     } finally {
       setIsLoading(false)
       abortControllerRef.current = null
@@ -161,20 +174,20 @@ export function Chat({ id: initialId, initialMessages, className }: ChatProps) {
   }, [])
 
   // Reload function
-  const reload = useCallback(() => {
+  const reload = useCallback(async () => {
     if (messages.length > 0) {
       const lastUserMessage = [...messages].reverse().find(m => m.role === 'user')
       if (lastUserMessage) {
         // Remove the last assistant message if it exists
         setMessages(prev => {
-          const lastIndex = prev.findIndex(m => m.role === 'assistant' && prev.indexOf(m) === prev.length - 1)
-          if (lastIndex > -1) {
-            return prev.slice(0, lastIndex)
+          const newMessages = [...prev]
+          if (newMessages.length > 0 && newMessages[newMessages.length - 1].role === 'assistant') {
+            newMessages.pop()
           }
-          return prev
+          return newMessages
         })
         // Resend the last user message
-        append(lastUserMessage)
+        await append(lastUserMessage)
       }
     }
   }, [messages, append])
