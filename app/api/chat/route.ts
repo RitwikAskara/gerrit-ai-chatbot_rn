@@ -105,7 +105,7 @@ export async function POST(req: Request) {
 
     return new Response(stream, {
       headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
+        'Content-Type': 'text/event-stream',  // FIXED: Changed from 'text/plain' to 'text/event-stream'
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
       },
@@ -121,7 +121,7 @@ export async function POST(req: Request) {
     return new Response(stream, {
       status: 500,
       headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
+        'Content-Type': 'text/event-stream',  // FIXED: Changed from 'text/plain' to 'text/event-stream'
       },
     })
   }
