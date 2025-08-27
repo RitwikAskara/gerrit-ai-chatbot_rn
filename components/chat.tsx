@@ -1,6 +1,8 @@
 'use client'
 
 import { useChat, type Message } from 'ai/react'
+import { useCallback, useRef, useState, useEffect } from 'react'
+
 import { cn } from '@/lib/utils'
 import { ChatList } from '@/components/chat-list'
 import { ChatPanel } from '@/components/chat-panel'
@@ -15,10 +17,10 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import { useState } from 'react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { toast } from 'react-hot-toast'
+import { nanoid } from '@/lib/utils'
 
 const IS_PREVIEW = process.env.VERCEL_ENV === 'preview'
 
@@ -27,50 +29,155 @@ export interface ChatProps extends React.ComponentProps<'div'> {
   id?: string
 }
 
-export function Chat({ id, initialMessages, className }: ChatProps) {
+export function Chat({ id: initialId, initialMessages, className }: ChatProps) {
   const [previewToken, setPreviewToken] = useLocalStorage<string | null>(
     'ai-token',
     null
   )
   const [previewTokenDialog, setPreviewTokenDialog] = useState(IS_PREVIEW)
   const [previewTokenInput, setPreviewTokenInput] = useState(previewToken ?? '')
+  
+  // Custom state management instead of useChat
+  const [messages, setMessages] = useState<Message[]>(initialMessages || [])
+  const [input, setInput] = useState('')
+  const [isLoading, setIsLoading] = useState(false)
+  const [id] = useState(initialId || nanoid())
+  const abortControllerRef = useRef<AbortController | null>(null)
 
-  const {
-    messages,
-    append,
-    reload,
-    stop,
-    isLoading,
-    input,
-    setInput
-  } = useChat({
-    initialMessages,
-    id,
-    body: {
-      id,
-      previewToken
-    },
-    // Patch: Normalize API response so we only see clean content
-    async onResponse(response) {
-      if (response.status === 401) {
-        toast.error(response.statusText)
-        return
+  // Custom append function
+  const append = useCallback(async (message: Message) => {
+    setIsLoading(true)
+    
+    // Add user message
+    const userMessage: Message = {
+      id: message.id || nanoid(),
+      role: 'user',
+      content: message.content
+    }
+    
+    setMessages(prev => [...prev, userMessage])
+    
+    try {
+      // Create abort controller for this request
+      abortControllerRef.current = new AbortController()
+      
+      // Call the API
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          id,
+          messages: [...messages, userMessage],
+          previewToken
+        }),
+        signal: abortControllerRef.current.signal
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
       }
 
-      try {
-        const data = await response.json()
-        const msg = Array.isArray(data) ? data[0] : data
-
-        return {
-          id: msg.id || Date.now().toString(),
-          role: msg.role || 'assistant',
-          content: msg.content || ''
+      // Read the response as text
+      const responseText = await response.text()
+      console.log('Raw response:', responseText)
+      
+      let assistantContent = ''
+      
+      // Try to extract content from various possible formats
+      if (responseText.startsWith('data: ')) {
+        // It's SSE format, extract the content
+        const lines = responseText.split('\n')
+        for (const line of lines) {
+          if (line.startsWith('data: ') && !line.includes('[DONE]')) {
+            try {
+              const data = JSON.parse(line.substring(6))
+              if (data.choices?.[0]?.delta?.content) {
+                assistantContent += data.choices[0].delta.content
+              } else if (data.choices?.[0]?.message?.content) {
+                assistantContent += data.choices[0].message.content
+              }
+            } catch (e) {
+              // Not JSON, might be plain text
+              if (!line.includes('[DONE]')) {
+                assistantContent += line.substring(6)
+              }
+            }
+          }
         }
-      } catch (err) {
-        console.error('Failed to parse chat response:', err)
+      } else {
+        // Try to parse as JSON
+        try {
+          const jsonResponse = JSON.parse(responseText)
+          if (jsonResponse.choices?.[0]?.message?.content) {
+            assistantContent = jsonResponse.choices[0].message.content
+          } else if (jsonResponse.choices?.[0]?.delta?.content) {
+            assistantContent = jsonResponse.choices[0].delta.content
+          } else if (jsonResponse.output) {
+            assistantContent = jsonResponse.output
+          } else if (typeof jsonResponse === 'string') {
+            assistantContent = jsonResponse
+          }
+        } catch (e) {
+          // It's plain text
+          assistantContent = responseText
+        }
+      }
+      
+      // Clean up the content
+      assistantContent = assistantContent.trim()
+      
+      if (assistantContent) {
+        // Add assistant message
+        const assistantMessage: Message = {
+          id: nanoid(),
+          role: 'assistant',
+          content: assistantContent
+        }
+        
+        setMessages(prev => [...prev, assistantMessage])
+      } else {
+        throw new Error('No content received from API')
+      }
+      
+    } catch (error: any) {
+      if (error.name !== 'AbortError') {
+        console.error('Chat error:', error)
+        toast.error(error.message || 'Failed to send message')
+      }
+    } finally {
+      setIsLoading(false)
+      abortControllerRef.current = null
+    }
+  }, [id, messages, previewToken])
+
+  // Stop function
+  const stop = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+      setIsLoading(false)
+    }
+  }, [])
+
+  // Reload function
+  const reload = useCallback(() => {
+    if (messages.length > 0) {
+      const lastUserMessage = [...messages].reverse().find(m => m.role === 'user')
+      if (lastUserMessage) {
+        // Remove the last assistant message if it exists
+        setMessages(prev => {
+          const lastIndex = prev.findIndex(m => m.role === 'assistant' && prev.indexOf(m) === prev.length - 1)
+          if (lastIndex > -1) {
+            return prev.slice(0, lastIndex)
+          }
+          return prev
+        })
+        // Resend the last user message
+        append(lastUserMessage)
       }
     }
-  })
+  }, [messages, append])
 
   return (
     <>
@@ -116,7 +223,7 @@ export function Chat({ id, initialMessages, className }: ChatProps) {
           <Input
             value={previewTokenInput}
             placeholder="OpenAI API key"
-            onChange={(e) => setPreviewTokenInput(e.target.value)}
+            onChange={e => setPreviewTokenInput(e.target.value)}
           />
           <DialogFooter className="items-center">
             <Button

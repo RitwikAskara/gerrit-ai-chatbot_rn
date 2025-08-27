@@ -1,20 +1,7 @@
 import 'server-only'
 import { nanoid } from '@/lib/utils'
-import { StreamingTextResponse } from 'ai'
 
 export const runtime = 'edge'
-
-// Helper to create a TransformStream that converts text to the expected format
-function createTransformStream() {
-  const encoder = new TextEncoder()
-  const decoder = new TextDecoder()
-  
-  return new TransformStream({
-    transform(chunk, controller) {
-      controller.enqueue(chunk)
-    }
-  })
-}
 
 export async function POST(req: Request) {
   try {
@@ -86,32 +73,23 @@ export async function POST(req: Request) {
 
     console.log('Processed AI response:', aiResponse)
 
-    // Create a ReadableStream with the response text
-    const stream = new ReadableStream({
-      async start(controller) {
-        const encoder = new TextEncoder()
-        // Send the entire response as one chunk
-        controller.enqueue(encoder.encode(aiResponse))
-        controller.close()
-      }
+    // Return plain text response
+    // The custom frontend will handle it properly
+    return new Response(aiResponse, {
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+      },
     })
-
-    // Use StreamingTextResponse from the Vercel AI SDK
-    // This should handle the formatting correctly for useChat
-    return new StreamingTextResponse(stream)
 
   } catch (error) {
     console.error('Chat API error:', error)
     
-    // Return error as a stream using StreamingTextResponse
-    const errorStream = new ReadableStream({
-      start(controller) {
-        const encoder = new TextEncoder()
-        controller.enqueue(encoder.encode('Sorry, I encountered an issue. Please try again.'))
-        controller.close()
-      }
+    // Return error message as plain text
+    return new Response('Sorry, I encountered an issue. Please try again.', {
+      status: 500,
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+      },
     })
-    
-    return new StreamingTextResponse(errorStream)
   }
 }
