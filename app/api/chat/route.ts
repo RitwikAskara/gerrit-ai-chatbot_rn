@@ -8,6 +8,7 @@ export async function POST(req: Request) {
     const json = await req.json()
     const { messages, id } = json
 
+    // Extract user message and generate session ID
     const userMessage = messages[messages.length - 1]?.content || ''
     const sessionId = id || nanoid()
 
@@ -29,11 +30,12 @@ export async function POST(req: Request) {
     }
 
     const n8nData = await n8nResponse.text()
-    console.log('n8n response:', n8nData)
+    console.log('n8n raw response:', n8nData)
 
     let aiResponse = ''
 
     try {
+      // Try parsing JSON
       const parsed = JSON.parse(n8nData)
       if (Array.isArray(parsed) && parsed[0]?.output) aiResponse = parsed[0].output
       else if (parsed.output) aiResponse = parsed.output
@@ -46,16 +48,27 @@ export async function POST(req: Request) {
     aiResponse = aiResponse.trim()
     console.log('Processed AI response:', aiResponse)
 
-    // ✅ Return clean JSON (not SSE)
-    return new Response(JSON.stringify({ reply: aiResponse }), {
+    // Return in the structure useChat() expects
+    const message = {
+      id: sessionId,
+      role: 'assistant',
+      content: aiResponse,
+    }
+
+    return new Response(JSON.stringify(message), {
       headers: { 'Content-Type': 'application/json' },
     })
 
   } catch (error) {
     console.error('Chat API error:', error)
-    return new Response(
-      JSON.stringify({ reply: 'Sorry, I encountered an issue. Please try again.' }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
-    )
+    const errorMessage = {
+      id: nanoid(),
+      role: 'assistant',
+      content: 'Sorry, I encountered an issue. Please try again.',
+    }
+    return new Response(JSON.stringify(errorMessage), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    })
   }
 }
