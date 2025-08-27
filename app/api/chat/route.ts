@@ -1,7 +1,20 @@
 import 'server-only'
 import { nanoid } from '@/lib/utils'
+import { StreamingTextResponse } from 'ai'
 
 export const runtime = 'edge'
+
+// Helper to create a TransformStream that converts text to the expected format
+function createTransformStream() {
+  const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+  
+  return new TransformStream({
+    transform(chunk, controller) {
+      controller.enqueue(chunk)
+    }
+  })
+}
 
 export async function POST(req: Request) {
   try {
@@ -73,61 +86,32 @@ export async function POST(req: Request) {
 
     console.log('Processed AI response:', aiResponse)
 
-    // Return a JSON response that might work better with useChat
-    const response = {
-      id: 'chatcmpl-' + nanoid(),
-      object: 'chat.completion',
-      created: Date.now(),
-      model: 'n8n',
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: 'assistant',
-            content: aiResponse
-          },
-          finish_reason: 'stop'
-        }
-      ],
-      usage: {
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0
+    // Create a ReadableStream with the response text
+    const stream = new ReadableStream({
+      async start(controller) {
+        const encoder = new TextEncoder()
+        // Send the entire response as one chunk
+        controller.enqueue(encoder.encode(aiResponse))
+        controller.close()
       }
-    }
-
-    return new Response(JSON.stringify(response), {
-      headers: {
-        'Content-Type': 'application/json',
-      },
     })
+
+    // Use StreamingTextResponse from the Vercel AI SDK
+    // This should handle the formatting correctly for useChat
+    return new StreamingTextResponse(stream)
 
   } catch (error) {
     console.error('Chat API error:', error)
     
-    // Return error as JSON
-    const errorResponse = {
-      id: 'chatcmpl-error',
-      object: 'chat.completion',
-      created: Date.now(),
-      model: 'n8n',
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: 'assistant',
-            content: 'Sorry, I encountered an issue. Please try again.'
-          },
-          finish_reason: 'stop'
-        }
-      ]
-    }
-    
-    return new Response(JSON.stringify(errorResponse), {
-      status: 500,
-      headers: {
-        'Content-Type': 'application/json',
-      },
+    // Return error as a stream using StreamingTextResponse
+    const errorStream = new ReadableStream({
+      start(controller) {
+        const encoder = new TextEncoder()
+        controller.enqueue(encoder.encode('Sorry, I encountered an issue. Please try again.'))
+        controller.close()
+      }
     })
+    
+    return new StreamingTextResponse(errorStream)
   }
 }
